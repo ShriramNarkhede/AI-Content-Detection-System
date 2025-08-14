@@ -10,8 +10,10 @@ from collections import Counter
 import math
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
+from scipy.sparse import hstack
 import pickle
 import os
 import io
@@ -20,6 +22,16 @@ import PyPDF2
 from typing import Dict, List, Tuple, Any
 import warnings
 warnings.filterwarnings('ignore')
+
+# NLTK corpora/models required for improved perplexity
+try:
+    nltk.data.find('corpora/brown')
+except LookupError:
+    nltk.download('brown')
+
+from nltk.corpus import brown
+from nltk.lm import KneserNeyInterpolated
+from nltk.lm.preprocessing import padded_everygram_pipeline, pad_both_ends
 
 # Download required NLTK data
 try:
@@ -36,7 +48,7 @@ except LookupError:
 # Page configuration
 st.set_page_config(
     page_title="AI Content Detector Pro",
-    page_icon="🔍",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
@@ -95,12 +107,44 @@ st.markdown("""
         color: #333333;
     }
     
-    /* Sidebar styling */
-    .css-1d391kg {
-        padding: 2rem;
-        background-color: #ffffff;
-        color: #333333;
-        border-right: 1px solid #e9ecef;
+    /* Sidebar styling - Target Streamlit sidebar specifically with dark theme */
+    .css-1d391kg, .css-1lcbmhc, .css-17eq0hr {
+        background-color: #1e293b !important;
+        color: #f1f5f9 !important;
+        border-right: 2px solid #334155 !important;
+        padding: 20px !important;
+        min-height: 100vh !important;
+    }
+    
+    /* Ensure sidebar has proper background */
+    .css-1d391kg > div, .css-1lcbmhc > div, .css-17eq0hr > div {
+        background-color: #1e293b !important;
+        color: #f1f5f9 !important;
+    }
+    
+    /* Sidebar text elements - force white text */
+    .css-1d391kg *, .css-1lcbmhc *, .css-17eq0hr * {
+        color: #ffffff !important;
+    }
+    
+    /* Sidebar title and headers - force light text */
+    .css-1d391kg h1, .css-1d391kg h2, .css-1d391kg h3,
+    .css-1lcbmhc h1, .css-1lcbmhc h2, .css-1lcbmhc h3,
+    .css-17eq0hr h1, .css-17eq0hr h2, .css-17eq0hr h3 {
+        color: #ffffff !important;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
+    }
+    
+    /* Sidebar markdown text - force white text */
+    .css-1d391kg .stMarkdown, .css-1lcbmhc .stMarkdown, .css-17eq0hr .stMarkdown {
+        color: #ffffff !important;
+    }
+    
+    /* Sidebar labels and text - force white text */
+    .css-1d391kg label, .css-1lcbmhc label, .css-17eq0hr label,
+    .css-1d391kg p, .css-1lcbmhc p, .css-17eq0hr p,
+    .css-1d391kg span, .css-1lcbmhc span, .css-17eq0hr span {
+        color: #ffffff !important;
     }
     
     /* Progress bar styling */
@@ -163,20 +207,69 @@ st.markdown("""
         color: #333333;
     }
     
-    /* Ensure all text is readable */
-    p, h1, h2, h3, h4, h5, h6, span, div {
-        color: #333333 !important;
+    /* Ensure main content text is readable (scope to main only) */
+    .main .block-container p,
+    .main .block-container h1,
+    .main .block-container h2,
+    .main .block-container h3,
+    .main .block-container h4,
+    .main .block-container h5,
+    .main .block-container h6,
+    .main .block-container span,
+    .main .block-container div {
+        color: #1f2937 !important; /* slate-800 */
     }
     
-    /* Streamlit default text color override */
-    .stMarkdown {
-        color: #333333 !important;
+    /* Streamlit default text color override (main only) */
+    .main .block-container .stMarkdown {
+        color: #1f2937 !important;
+    }
+
+    /* Stable sidebar targeting for consistent readability across versions */
+    section[data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%) !important; /* slate-900 → slate-800 */
+    }
+    section[data-testid="stSidebar"],
+    section[data-testid="stSidebar"] * {
+        color: #ffffff !important;
+    }
+    section[data-testid="stSidebar"] .stSelectbox > div > div,
+    section[data-testid="stSidebar"] .stMultiSelect > div > div,
+    section[data-testid="stSidebar"] .stTextInput > div > div,
+    section[data-testid="stSidebar"] .stNumberInput > div > div {
+        background-color: #334155 !important; /* slate-700 */
+        color: #ffffff !important;
+        border: 1px solid #475569 !important; /* slate-600 */
+        border-radius: 8px !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.3) !important;
+    }
+    section[data-testid="stSidebar"] .stSelectbox > label,
+    section[data-testid="stSidebar"] .stCheckbox > label,
+    section[data-testid="stSidebar"] label {
+        color: #ffffff !important;
+        font-weight: 600 !important;
+    }
+    section[data-testid="stSidebar"] .stMarkdown,
+    section[data-testid="stSidebar"] .stMarkdown p,
+    section[data-testid="stSidebar"] .stMarkdown li {
+        color: #e2e8f0 !important; /* slate-200 for better readability */
+    }
+    section[data-testid="stSidebar"] .stAlert {
+        background-color: #334155 !important;
+        color: #e2e8f0 !important;
+        border: 1px solid #475569 !important;
     }
     
-    /* Metric display styling */
+    /* Metric display styling - ensure strong contrast */
     .metric-value {
-        color: #333333;
-        font-weight: bold;
+        color: #1f2937; /* slate-800 */
+        font-weight: 700;
+    }
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricDelta"] {
+        color: #1f2937 !important;
+        opacity: 1 !important;
     }
     
     /* Chart title styling */
@@ -207,49 +300,244 @@ st.markdown("""
         color: #333333 !important;
     }
     
-    /* Sidebar header styling */
-    .css-1d391kg h1, .css-1d391kg h2, .css-1d391kg h3 {
-        color: #333333 !important;
+    /* Sidebar header styling - multiple CSS classes for compatibility */
+    .css-1d391kg h1, .css-1d391kg h2, .css-1d391kg h3,
+    .css-1lcbmhc h1, .css-1lcbmhc h2, .css-1lcbmhc h3,
+    .css-17eq0hr h1, .css-17eq0hr h2, .css-17eq0hr h3 {
+        color: #ffffff !important;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
     }
     
-    /* Sidebar text styling */
-    .css-1d391kg p, .css-1d391kg span, .css-1d391kg div {
-        color: #333333 !important;
+    /* Sidebar text styling - multiple CSS classes for compatibility */
+    .css-1d391kg p, .css-1d391kg span, .css-1d391kg div,
+    .css-1lcbmhc p, .css-1lcbmhc span, .css-1lcbmhc div,
+    .css-17eq0hr p, .css-17eq0hr span, .css-17eq0hr div {
+        color: #f1f5f9 !important;
     }
     
-    /* Sidebar selectbox styling */
-    .css-1d391kg .stSelectbox > div > div {
-        background-color: #ffffff;
-        color: #333333;
-        border: 2px solid #e9ecef;
-        border-radius: 8px;
+    /* Sidebar selectbox styling - multiple CSS classes for compatibility */
+    .css-1d391kg .stSelectbox > div > div,
+    .css-1lcbmhc .stSelectbox > div > div,
+    .css-17eq0hr .stSelectbox > div > div {
+        background-color: #334155 !important;
+        color: #f1f5f9 !important;
+        border: 2px solid #475569 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.3) !important;
     }
     
-    /* Sidebar checkbox styling */
-    .css-1d391kg .stCheckbox > label {
-        color: #333333 !important;
-        font-weight: 500;
+    /* Sidebar selectbox focus state */
+    .css-1d391kg .stSelectbox > div > div:focus,
+    .css-1lcbmhc .stSelectbox > div > div:focus,
+    .css-17eq0hr .stSelectbox > div > div:focus {
+        border-color: #FF6B6B !important;
+        box-shadow: 0 0 0 0.2rem rgba(255, 107, 107, 0.4) !important;
+        background-color: #475569 !important;
     }
     
-    /* Sidebar markdown styling */
-    .css-1d391kg .stMarkdown {
-        color: #333333 !important;
+    /* Sidebar selectbox label styling */
+    .css-1d391kg .stSelectbox > label,
+    .css-1lcbmhc .stSelectbox > label,
+    .css-17eq0hr .stSelectbox > label {
+        color: #f1f5f9 !important;
+        font-weight: 600 !important;
+        font-size: 14px !important;
+        margin-bottom: 8px !important;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
     }
     
-    /* Sidebar success/error messages */
-    .css-1d391kg .stSuccess,
-    .css-1d391kg .stError,
-    .css-1d391kg .stWarning,
-    .css-1d391kg .stInfo {
-        background-color: #ffffff !important;
-        color: #333333 !important;
-        border: 1px solid #e9ecef !important;
+    /* Sidebar checkbox container styling */
+    .css-1d391kg .stCheckbox,
+    .css-1lcbmhc .stCheckbox,
+    .css-17eq0hr .stCheckbox {
+        margin-bottom: 15px !important;
+        padding: 8px 0 !important;
     }
     
-    /* Sidebar divider styling */
-    .css-1d391kg hr {
-        border-color: #e9ecef;
-        margin: 1rem 0;
+    /* Sidebar checkbox styling - multiple CSS classes for compatibility */
+    .css-1d391kg .stCheckbox > label,
+    .css-1lcbmhc .stCheckbox > label,
+    .css-17eq0hr .stCheckbox > label {
+        color: #f1f5f9 !important;
+        font-weight: 600 !important;
+        font-size: 14px !important;
+        line-height: 1.4 !important;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
+    }
+    
+    /* Sidebar checkbox input styling */
+    .css-1d391kg .stCheckbox input[type="checkbox"],
+    .css-1lcbmhc .stCheckbox input[type="checkbox"],
+    .css-17eq0hr .stCheckbox input[type="checkbox"] {
+        accent-color: #FF6B6B !important;
+        transform: scale(1.2) !important;
+        filter: brightness(1.2) !important;
+    }
+    
+    /* Sidebar markdown styling - multiple CSS classes for compatibility */
+    .css-1d391kg .stMarkdown,
+    .css-1lcbmhc .stMarkdown,
+    .css-17eq0hr .stMarkdown {
+        color: #f1f5f9 !important;
+    }
+    
+    /* Sidebar success/error messages - multiple CSS classes for compatibility */
+    .css-1d391kg .stSuccess, .css-1d391kg .stError, .css-1d391kg .stWarning, .css-1d391kg .stInfo,
+    .css-1lcbmhc .stSuccess, .css-1lcbmhc .stError, .css-1lcbmhc .stWarning, .css-1lcbmhc .stInfo,
+    .css-17eq0hr .stSuccess, .css-17eq0hr .stError, .css-17eq0hr .stWarning, .css-17eq0hr .stInfo {
+        background-color: #334155 !important;
+        color: #f1f5f9 !important;
+        border: 1px solid #475569 !important;
+        border-radius: 8px !important;
+        padding: 12px !important;
+        margin: 8px 0 !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.3) !important;
+    }
+    
+    /* Specific message type styling in sidebar */
+    .css-1d391kg .stSuccess, .css-1lcbmhc .stSuccess, .css-17eq0hr .stSuccess {
+        background-color: #065f46 !important;
+        border-color: #047857 !important;
+        color: #ecfdf5 !important;
+    }
+    
+    .css-1d391kg .stInfo, .css-1lcbmhc .stInfo, .css-17eq0hr .stInfo {
+        background-color: #0c4a6e !important;
+        border-color: #0369a1 !important;
+        color: #f0f9ff !important;
+    }
+    
+    /* Sidebar divider styling - multiple CSS classes for compatibility */
+    .css-1d391kg hr, .css-1lcbmhc hr, .css-17eq0hr hr {
+        border-color: #475569 !important;
+        margin: 1rem 0 !important;
+        border-width: 2px !important;
+    }
+    
+    /* Additional sidebar styling for better readability */
+    .css-1d391kg, .css-1lcbmhc, .css-17eq0hr {
+        padding: 20px !important;
+        position: relative !important;
+        background: linear-gradient(180deg, #1e293b 0%, #334155 100%) !important;
+    }
+    
+    /* Sidebar content spacing */
+    .css-1d391kg > *, .css-1lcbmhc > *, .css-17eq0hr > * {
+        margin-bottom: 15px !important;
+    }
+    
+    /* Sidebar text elements spacing */
+    .css-1d391kg p, .css-1lcbmhc p, .css-17eq0hr p {
+        margin-bottom: 10px !important;
+        line-height: 1.6 !important;
+    }
+    
+    /* Force sidebar text color override for dark theme */
+    .css-1d391kg h1, .css-1d391kg h2, .css-1d391kg h3,
+    .css-1lcbmhc h1, .css-1lcbmhc h2, .css-1lcbmhc h3,
+    .css-17eq0hr h1, .css-17eq0hr h2, .css-17eq0hr h3,
+    .css-1d391kg p, .css-1lcbmhc p, .css-17eq0hr p,
+    .css-1d391kg span, .css-1lcbmhc span, .css-17eq0hr span,
+    .css-1d391kg label, .css-1lcbmhc label, .css-17eq0hr label {
+        color: #ffffff !important;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.3) !important;
+    }
+    
+    /* Additional aggressive text color override */
+    .css-1d391kg div, .css-1lcbmhc div, .css-17eq0hr div {
+        color: #ffffff !important;
+    }
+    
+    /* Override any remaining dark text */
+    .css-1d391kg *, .css-1lcbmhc *, .css-17eq0hr * {
+        color: #ffffff !important;
+    }
+    
+    /* Force all sidebar text to be white - final override */
+    .css-1d391kg, .css-1lcbmhc, .css-17eq0hr,
+    .css-1d391kg *, .css-1lcbmhc *, .css-17eq0hr * {
+        color: #ffffff !important;
+    }
+    
+    /* Specific override for any stubborn elements */
+    .css-1d391kg div, .css-1lcbmhc div, .css-17eq0hr div,
+    .css-1d391kg span, .css-1lcbmhc span, .css-17eq0hr span,
+    .css-1d391kg p, .css-1lcbmhc p, .css-17eq0hr p {
+        color: #ffffff !important;
+    }
+    
+    /* Force sidebar markdown text to be white */
+    .css-1d391kg .stMarkdown p, .css-1lcbmhc .stMarkdown p, .css-17eq0hr .stMarkdown p,
+    .css-1d391kg .stMarkdown strong, .css-1lcbmhc .stMarkdown strong, .css-17eq0hr .stMarkdown strong,
+    .css-1d391kg .stMarkdown b, .css-1lcbmhc .stMarkdown b, .css-17eq0hr .stMarkdown b {
+        color: #ffffff !important;
+    }
+    
+    /* Force sidebar help text to be white */
+    .css-1d391kg .stSelectbox > div > div > div,
+    .css-1lcbmhc .stSelectbox > div > div > div,
+    .css-17eq0hr .stSelectbox > div > div > div {
+        color: #ffffff !important;
+    }
+    
+    /* Force sidebar title to be white */
+    .css-1d391kg h1, .css-1lcbmhc h1, .css-17eq0hr h1 {
+        color: #ffffff !important;
+        font-size: 24px !important;
+        font-weight: bold !important;
+        margin-bottom: 20px !important;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.5) !important;
+    }
+    
+    /* Force sidebar headers to be white */
+    .css-1d391kg h3, .css-1lcbmhc h3, .css-17eq0hr h3 {
+        color: #ffffff !important;
+        font-size: 18px !important;
+        font-weight: 600 !important;
+        margin-top: 20px !important;
+        margin-bottom: 10px !important;
+        text-shadow: 0 1px 3px rgba(0,0,0,0.4) !important;
+    }
+    
+    /* Force sidebar markdown content to be white */
+    .css-1d391kg .stMarkdown, .css-1lcbmhc .stMarkdown, .css-17eq0hr .stMarkdown {
+        color: #ffffff !important;
+        line-height: 1.6 !important;
+        background-color: transparent !important;
+    }
+    
+    /* Force sidebar markdown paragraphs to be white */
+    .css-1d391kg .stMarkdown p, .css-1lcbmhc .stMarkdown p, .css-17eq0hr .stMarkdown p {
+        color: #ffffff !important;
+        margin-bottom: 8px !important;
+        line-height: 1.5 !important;
+    }
+    
+    /* Force sidebar markdown lists to be white */
+    .css-1d391kg .stMarkdown ul, .css-1lcbmhc .stMarkdown ul, .css-17eq0hr .stMarkdown ul,
+    .css-1d391kg .stMarkdown ol, .css-1lcbmhc .stMarkdown ol, .css-17eq0hr .stMarkdown ol {
+        color: #ffffff !important;
+        margin-left: 20px !important;
+    }
+    
+    /* Force sidebar markdown list items to be white */
+    .css-1d391kg .stMarkdown li, .css-1lcbmhc .stMarkdown li, .css-17eq0hr .stMarkdown li {
+        color: #ffffff !important;
+        margin-bottom: 5px !important;
+    }
+    
+    /* Force sidebar markdown strong/bold text to be white */
+    .css-1d391kg .stMarkdown strong, .css-1lcbmhc .stMarkdown strong, .css-17eq0hr .stMarkdown strong {
+        color: #ffffff !important;
+        font-weight: 600 !important;
+    }
+    
+    /* Force sidebar divider to be visible */
+    .css-1d391kg hr, .css-1lcbmhc hr, .css-17eq0hr hr {
+        border-color: #64748b !important;
+        border-width: 2px !important;
+        margin: 20px 0 !important;
+        opacity: 0.8 !important;
     }
     
     /* Input field focus styling */
@@ -264,41 +552,84 @@ st.markdown("""
         box-shadow: 0 0 0 0.2rem rgba(255, 107, 107, 0.25) !important;
     }
     
-    /* Success message styling */
-    .stSuccess {
-        background-color: #d4edda !important;
-        color: #155724 !important;
-        border: 1px solid #c3e6cb !important;
+    /* Alerts - main content (high contrast, rounded) */
+    .main .block-container .stAlert {
+        border-radius: 12px !important;
+        padding: 14px 16px !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+        border-width: 1px !important;
     }
-    
-    /* Error message styling */
-    .stError {
-        background-color: #f8d7da !important;
-        color: #721c24 !important;
-        border: 1px solid #f5c6cb !important;
+    .main .block-container .stSuccess {
+        background-color: #ecfdf5 !important; /* emerald-50 */
+        color: #065f46 !important;           /* emerald-800 */
+        border: 1px solid #34d399 !important; /* emerald-400 */
+        font-weight: 600 !important;
     }
-    
-    /* Warning message styling */
-    .stWarning {
-        background-color: #fff3cd !important;
-        color: #856404 !important;
-        border: 1px solid #ffeaa7 !important;
+    .main .block-container .stError {
+        background-color: #fef2f2 !important; /* red-50 */
+        color: #991b1b !important;            /* red-800 */
+        border: 1px solid #fca5a5 !important; /* red-300 */
+        font-weight: 600 !important;
     }
-    
-    /* Info message styling */
-    .stInfo {
-        background-color: #d1ecf1 !important;
-        color: #0c5460 !important;
-        border: 1px solid #bee5eb !important;
+    .main .block-container .stWarning {
+        background-color: #fffbeb !important; /* amber-50 */
+        color: #92400e !important;            /* amber-800 */
+        border: 1px solid #fbbf24 !important; /* amber-400 */
+        font-weight: 600 !important;
+    }
+    .main .block-container .stInfo {
+        background-color: #eff6ff !important; /* blue-50 */
+        color: #1e3a8a !important;            /* blue-800 */
+        border: 1px solid #93c5fd !important; /* blue-300 */
+        font-weight: 600 !important;
+    }
+
+    /* Alerts - sidebar (rounded, subtle, readable on dark) */
+    section[data-testid="stSidebar"] .stAlert {
+        border-radius: 10px !important;
+        padding: 12px !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.3) !important;
+        border-width: 1px !important;
+    }
+    section[data-testid="stSidebar"] .stSuccess {
+        background-color: rgba(16, 185, 129, 0.15) !important; /* emerald-500 @ 15% */
+        color: #e2e8f0 !important; /* slate-200 */
+        border: 1px solid rgba(16, 185, 129, 0.45) !important;
+    }
+    section[data-testid="stSidebar"] .stError {
+        background-color: rgba(239, 68, 68, 0.15) !important; /* red-500 @ 15% */
+        color: #e2e8f0 !important;
+        border: 1px solid rgba(239, 68, 68, 0.45) !important;
+    }
+    section[data-testid="stSidebar"] .stWarning {
+        background-color: rgba(245, 158, 11, 0.18) !important; /* amber-500 */
+        color: #e2e8f0 !important;
+        border: 1px solid rgba(245, 158, 11, 0.5) !important;
+    }
+    section[data-testid="stSidebar"] .stInfo {
+        background-color: rgba(59, 130, 246, 0.18) !important; /* blue-500 */
+        color: #e2e8f0 !important;
+        border: 1px solid rgba(59, 130, 246, 0.5) !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
 class AIContentDetector:
     def __init__(self):
-        self.vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
-        self.classifier = RandomForestClassifier(n_estimators=100, random_state=42)
+        # Stronger default text features and a linear classifier that works well on sparse TF-IDF
+        self.vectorizer = TfidfVectorizer(
+            max_features=20000,
+            stop_words='english',
+            ngram_range=(1, 2),
+            sublinear_tf=True,
+            lowercase=True
+        )
+        self.classifier = LogisticRegression(
+            solver='liblinear', random_state=42, max_iter=1000, class_weight='balanced'
+        )
         self.model_path = "ai_detector_model.pkl"
+        self.threshold = 0.5
+        self.metrics = {}
         self.load_or_train_model()
     
     def load_or_train_model(self):
@@ -309,39 +640,82 @@ class AIContentDetector:
                     model_data = pickle.load(f)
                     self.vectorizer = model_data['vectorizer']
                     self.classifier = model_data['classifier']
-                st.sidebar.success("✅ Model loaded successfully")
+                    # Optional fields for newer models
+                    self.threshold = model_data.get('threshold', 0.5)
+                    self.metrics = model_data.get('metrics', {})
+                st.sidebar.success("Model loaded successfully")
             except:
-                st.sidebar.warning("⚠️ Model loading failed, training new model...")
+                st.sidebar.warning("Model loading failed, training new model...")
                 self.train_model()
         else:
-            st.sidebar.info("🔄 Training new model...")
+            st.sidebar.info("Training new model...")
             self.train_model()
     
     def train_model(self):
-        """Train the ML model with synthetic data."""
-        # Generate synthetic training data
-        human_texts = self.generate_human_like_texts(100)
-        ai_texts = self.generate_ai_like_texts(100)
-        
+        """Train the ML model with synthetic data.
+        Note: For best real-world performance, replace this synthetic dataset
+        with a labeled dataset of real human and AI texts.
+        """
+        # Generate synthetic training data (larger, with more variety)
+        human_texts = self.generate_human_like_texts(300)
+        ai_texts = self.generate_ai_like_texts(300)
+
         # Combine and label data
         texts = human_texts + ai_texts
         labels = [0] * len(human_texts) + [1] * len(ai_texts)  # 0=human, 1=AI
-        
-        # Vectorize texts
-        X = self.vectorizer.fit_transform(texts)
-        
+
+        # Train/validation split
+        X_train_texts, X_val_texts, y_train, y_val = train_test_split(
+            texts, labels, test_size=0.2, random_state=42, stratify=labels
+        )
+
+        # Vectorize
+        X_train = self.vectorizer.fit_transform(X_train_texts)
+        X_val = self.vectorizer.transform(X_val_texts)
+
         # Train classifier
-        self.classifier.fit(X, labels)
-        
+        self.classifier.fit(X_train, y_train)
+
+        # Validation metrics and threshold tuning (Youden's J)
+        try:
+            val_proba = self.classifier.predict_proba(X_val)[:, 1]
+        except Exception:
+            # Fallback for classifiers without predict_proba
+            val_proba = self.classifier.decision_function(X_val)
+            # Min-max normalize to [0,1]
+            val_proba = (val_proba - val_proba.min()) / (val_proba.max() - val_proba.min() + 1e-9)
+
+        fpr, tpr, thresholds = roc_curve(y_val, val_proba)
+        youden_j = tpr - fpr
+        best_idx = int(youden_j.argmax())
+        self.threshold = float(thresholds[best_idx])
+
+        val_pred = (val_proba >= self.threshold).astype(int)
+        acc = float(accuracy_score(y_val, val_pred))
+        try:
+            auc = float(roc_auc_score(y_val, val_proba))
+        except Exception:
+            auc = None
+
+        self.metrics = {
+            'val_accuracy': acc,
+            'val_auc': auc,
+            'threshold': self.threshold,
+            'num_train_samples': len(X_train_texts),
+            'num_val_samples': len(X_val_texts)
+        }
+
         # Save model
         model_data = {
             'vectorizer': self.vectorizer,
-            'classifier': self.classifier
+            'classifier': self.classifier,
+            'threshold': self.threshold,
+            'metrics': self.metrics,
         }
         with open(self.model_path, 'wb') as f:
             pickle.dump(model_data, f)
-        
-        st.sidebar.success("✅ Model trained and saved")
+
+        st.sidebar.success(f"Model trained and saved | Val Acc: {acc:.2f}" + (f", AUC: {auc:.2f}" if auc is not None else ""))
     
     def generate_human_like_texts(self, num_samples: int) -> List[str]:
         """Generate human-like text samples for training."""
@@ -410,6 +784,10 @@ class AIContentDetector:
 class TextAnalyzer:
     def __init__(self):
         self.detector = AIContentDetector()
+        # Expose validation metrics in the UI if available
+        if self.detector.metrics:
+            with st.sidebar.expander("Model Metrics", expanded=False):
+                st.write({k: (f"{v:.3f}" if isinstance(v, float) else v) for k, v in self.detector.metrics.items()})
     
     def extract_text_from_file(self, uploaded_file) -> str:
         """Extract text from uploaded file."""
@@ -484,28 +862,77 @@ class TextAnalyzer:
             "unique_word_ratio": unique_word_ratio
         }
     
-    def calculate_perplexity_score(self, text: str) -> float:
-        """Calculate perplexity-based score."""
-        words = text.lower().split()
-        if not words:
-            return 0.0
-        
-        # Calculate word frequency
-        word_freq = Counter(words)
-        total_words = len(words)
-        
-        # Calculate perplexity (simplified version)
-        log_prob = 0
-        for word in words:
-            prob = word_freq[word] / total_words
-            log_prob += math.log(prob + 1e-10)  # Add small epsilon to avoid log(0)
-        
-        perplexity = math.exp(-log_prob / total_words)
-        
-        # Normalize to 0-1 scale (higher = more human-like)
-        normalized_perplexity = min(perplexity / 100, 1.0)
-        
-        return normalized_perplexity
+    def calculate_perplexity_score(self, text: str) -> Dict[str, float]:
+        """Improved perplexity analysis.
+
+        - Uses a cached Kneser–Ney trigram LM on Brown corpus.
+        - Computes raw perplexity (ppl) and a burstiness measure
+          (variance of per-sentence average log-probabilities).
+        - Returns a dict with: { 'score', 'ppl', 'burstiness' }.
+
+        Heuristic mapping to human-likeness:
+          - Higher ppl often corresponds to less template-like, more human text.
+          - Higher burstiness (variability across sentences) also suggests human text.
+        """
+        try:
+            sentences = nltk.sent_tokenize(text)
+            tokens = [w.lower() for w in nltk.word_tokenize(text) if any(c.isalpha() for c in w)]
+            if len(tokens) < 20 or len(sentences) < 2:
+                return { 'score': 0.5, 'ppl': 0.0, 'burstiness': 0.0 }
+
+            # Train or reuse LM
+            if not hasattr(self, '_lm'):
+                train_sents = [[w.lower() for w in sent] for sent in brown.sents()]
+                train_data, vocab = padded_everygram_pipeline(3, train_sents)
+                self._lm = KneserNeyInterpolated(3)
+                self._lm.fit(train_data, vocab)
+
+            # Token-level perplexity
+            padded = list(pad_both_ends(tokens, n=3))
+            test_grams = [tuple(padded[i-2:i+1]) for i in range(2, len(padded))]
+            log_prob = 0.0
+            log_probs = []
+            for gram in test_grams:
+                context = gram[:-1]
+                word = gram[-1]
+                prob = self._lm.score(word, context)
+                lp = math.log(max(prob, 1e-12))
+                log_prob += lp
+                log_probs.append(lp)
+            ppl = math.exp(-log_prob / max(len(test_grams), 1))
+
+            # Sentence-level burstiness: variance of mean log-probs per sentence
+            sent_scores = []
+            idx = 0
+            tokenized_sents = [
+                [w.lower() for w in nltk.word_tokenize(s) if any(c.isalpha() for c in w)]
+                for s in sentences
+            ]
+            for sent in tokenized_sents:
+                if len(sent) < 2:
+                    continue
+                sp = list(pad_both_ends(sent, n=3))
+                grams = [tuple(sp[i-2:i+1]) for i in range(2, len(sp))]
+                if not grams:
+                    continue
+                s_log = 0.0
+                for g in grams:
+                    s_log += math.log(max(self._lm.score(g[-1], g[:-1]), 1e-12))
+                sent_scores.append(s_log / len(grams))
+            burstiness = float(np.var(sent_scores)) if len(sent_scores) >= 2 else 0.0
+
+            # Normalize to [0,1]
+            ppl_component = min(ppl / 600.0, 1.0)  # cap around 600
+            burst_component = max(0.0, min((burstiness + 5.0) / 10.0, 1.0))  # widen typical range
+            score = 0.6 * ppl_component + 0.4 * burst_component
+
+            return {
+                'score': float(max(0.0, min(1.0, score))),
+                'ppl': float(ppl),
+                'burstiness': float(burstiness),
+            }
+        except Exception:
+            return { 'score': 0.5, 'ppl': 0.0, 'burstiness': 0.0 }
     
     def get_ml_prediction(self, text: str) -> float:
         """Get ML model prediction."""
@@ -513,8 +940,13 @@ class TextAnalyzer:
             # Vectorize text
             X = self.detector.vectorizer.transform([text])
             # Get prediction probability
-            prob = self.detector.classifier.predict_proba(X)[0]
-            return prob[1]  # Probability of being AI-generated
+            if hasattr(self.detector.classifier, 'predict_proba'):
+                prob = self.detector.classifier.predict_proba(X)[0, 1]
+            else:
+                score = self.detector.classifier.decision_function(X)[0]
+                # Min-max normalize single score to [0,1] with a logistic proxy
+                prob = 1 / (1 + math.exp(-score))
+            return float(prob)  # Probability of being AI-generated
         except Exception as e:
             st.warning(f"ML prediction failed: {str(e)}")
             return 0.5
@@ -537,19 +969,23 @@ class TextAnalyzer:
             results["stylometric_score"] = stylometric_score
         
         if method in ["Perplexity Analysis", "Combined Analysis"]:
-            perplexity = self.calculate_perplexity_score(text)
-            results["perplexity"] = perplexity
+            perplexity_details = self.calculate_perplexity_score(text)
+            results["perplexity"] = perplexity_details.get('score', 0.5)
+            results["perplexity_details"] = perplexity_details
         
         if method in ["ML Classification", "Combined Analysis"]:
             ml_score = self.get_ml_prediction(text)
             results["ml_score"] = ml_score
+            # Also expose thresholded class for transparency
+            if hasattr(self.detector, 'threshold'):
+                results["ml_pred"] = int(ml_score >= self.detector.threshold)
         
         # Combined score calculation
         if method == "Combined Analysis":
             weights = {
-                "stylometric": 0.3,
-                "perplexity": 0.3,
-                "ml": 0.4
+                "stylometric": 0.25,
+                "perplexity": 0.35,
+                "ml": 0.40
             }
             
             combined_score = (
@@ -570,7 +1006,7 @@ analyzer = get_analyzer()
 
 # Sidebar
 with st.sidebar:
-    st.title("⚙️ Detection Settings")
+    st.title("Detection Settings")
     detection_method = st.selectbox(
         "Detection Method",
         ["Combined Analysis", "Stylometric Analysis", "Perplexity Analysis", "ML Classification"],
@@ -581,7 +1017,7 @@ with st.sidebar:
     show_features = st.checkbox("Show Feature Breakdown", value=True)
     
     st.markdown("---")
-    st.markdown("### 📊 Analysis Methods")
+    st.markdown("### Analysis Methods")
     st.markdown("""
     **Combined Analysis**: Uses all methods for highest accuracy
     **Stylometric**: Analyzes writing style patterns
@@ -590,18 +1026,18 @@ with st.sidebar:
     """)
     
     st.markdown("---")
-    st.markdown("### 📈 Model Status")
+    st.markdown("### Model Status")
     if os.path.exists("ai_detector_model.pkl"):
-        st.success("✅ ML Model Ready")
+        st.markdown("<div class='stSuccess'>✅ <strong>ML Model Ready</strong></div>", unsafe_allow_html=True)
     else:
-        st.info("🔄 Training ML Model...")
+        st.markdown("<div class='stInfo'>⏳ <strong>Training ML Model...</strong></div>", unsafe_allow_html=True)
 
 # Main content
-st.title("🔍 AI Content Detector Pro")
+st.title("AI Content Detector Pro")
 st.markdown("Advanced AI-generated content detection using multiple analysis techniques")
 
 # File upload section
-st.markdown("### 📁 Upload Document")
+st.markdown("### Upload Document")
 uploaded_file = st.file_uploader(
     "Upload a document (.txt, .docx, .pdf)",
     type=["txt", "docx", "pdf"],
@@ -609,7 +1045,7 @@ uploaded_file = st.file_uploader(
 )
 
 # Text input section
-st.markdown("### 📝 Or Enter Text Directly")
+st.markdown("### Or Enter Text Directly")
 text_input = st.text_area(
     "Paste your text here",
     height=200,
@@ -619,7 +1055,7 @@ text_input = st.text_area(
 # Analysis button
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-    analyze_button = st.button("🚀 Analyze Content", use_container_width=True)
+    analyze_button = st.button("Analyze Content", use_container_width=True)
 
 if analyze_button:
     if text_input or uploaded_file:
@@ -637,11 +1073,11 @@ if analyze_button:
             st.stop()
         
         # Perform analysis
-        with st.spinner("🔍 Analyzing content with advanced algorithms..."):
+        with st.spinner("Analyzing content with advanced algorithms..."):
             results = analyzer.analyze_text(text_content, detection_method)
             
             # Display results
-            st.markdown("## 📊 Analysis Results")
+            st.markdown("## Analysis Results")
             
             # Create main results display
             col1, col2 = st.columns([2, 1])
@@ -683,7 +1119,7 @@ if analyze_button:
                 st.plotly_chart(fig, use_container_width=True)
             
             with col2:
-                st.markdown("### 🎯 Confidence Scores")
+                st.markdown("### Confidence Scores")
                 
                 # Create metric cards
                 st.markdown(f"""
@@ -720,11 +1156,11 @@ if analyze_button:
             
             # Detailed analysis section
             if show_explanation:
-                st.markdown("## 🔍 Detailed Analysis")
+                st.markdown("## Detailed Analysis")
                 
                 # Create subplots for detailed analysis
                 if detection_method in ["Stylometric Analysis", "Combined Analysis"] and "stylometric" in results:
-                    st.markdown("### 📈 Stylometric Analysis")
+                    st.markdown("### Stylometric Analysis")
                     
                     features = results["stylometric"]
                     
@@ -758,7 +1194,7 @@ if analyze_button:
                     st.plotly_chart(fig, use_container_width=True)
                     
                     if show_features:
-                        st.markdown("#### 📋 Feature Breakdown")
+                        st.markdown("#### Feature Breakdown")
                         col1, col2 = st.columns(2)
                         
                         with col1:
@@ -800,9 +1236,10 @@ if analyze_button:
                             """, unsafe_allow_html=True)
                 
                 if detection_method in ["Perplexity Analysis", "Combined Analysis"] and "perplexity" in results:
-                    st.markdown("### 🧮 Perplexity Analysis")
+                    st.markdown("### Perplexity Analysis")
                     
                     perplexity_score = results["perplexity"]
+                    details = results.get("perplexity_details", {})
                     
                     # Create perplexity gauge
                     fig = go.Figure(go.Indicator(
@@ -835,9 +1272,16 @@ if analyze_button:
                         title_font=dict(color='#333333')
                     )
                     st.plotly_chart(fig, use_container_width=True)
+
+                    # Show raw metrics for transparency
+                    st.markdown(
+                        f"<div class='metric-card'><p><strong>Raw Perplexity:</strong> {details.get('ppl', 0):.1f}</p>"
+                        f"<p><strong>Burstiness:</strong> {details.get('burstiness', 0):.3f}</p></div>",
+                        unsafe_allow_html=True
+                    )
                 
                 if detection_method in ["ML Classification", "Combined Analysis"] and "ml_score" in results:
-                    st.markdown("### 🤖 Machine Learning Analysis")
+                    st.markdown("### Machine Learning Analysis")
                     
                     ml_score = results["ml_score"]
                     human_ml_prob = (1 - ml_score) * 100
@@ -852,40 +1296,40 @@ if analyze_button:
                     """, unsafe_allow_html=True)
             
             # Summary and recommendations
-            st.markdown("## 💡 Analysis Summary")
+            st.markdown("## Analysis Summary")
             
             if human_probability > 70:
-                st.success("✅ **High confidence that this content was written by a human.**")
+                st.markdown("<div class='stSuccess'>High confidence that this content was written by a human.</div>", unsafe_allow_html=True)
                 st.markdown("The text shows natural variations in writing style, vocabulary usage, and sentence structure typical of human writing.")
             elif human_probability > 50:
-                st.warning("⚠️ **Moderate confidence - mixed signals detected.**")
+                st.markdown("<div class='stWarning'>Moderate confidence - mixed signals detected.</div>", unsafe_allow_html=True)
                 st.markdown("The analysis shows some characteristics of both human and AI writing. Consider additional context or manual review.")
             else:
-                st.error("🚨 **High confidence that this content was AI-generated.**")
+                st.markdown("<div class='stError'>High confidence that this content was AI-generated.</div>", unsafe_allow_html=True)
                 st.markdown("The text exhibits patterns commonly associated with AI-generated content, such as consistent structure and vocabulary usage.")
             
-            # Text statistics
-            st.markdown("### 📊 Text Statistics")
+            # Text statistics (force visible by avoiding dimmed metric style)
+            st.markdown("### Text Statistics")
             word_count = len(text_content.split())
             char_count = len(text_content)
             sentence_count = len(nltk.sent_tokenize(text_content))
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Words", f"{word_count:,}")
-            with col2:
-                st.metric("Characters", f"{char_count:,}")
-            with col3:
-                st.metric("Sentences", f"{sentence_count:,}")
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(f"<div class='metric-card'><h4>Words</h4><h2 class='metric-value'>{word_count:,}</h2></div>", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"<div class='metric-card'><h4>Characters</h4><h2 class='metric-value'>{char_count:,}</h2></div>", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"<div class='metric-card'><h4>Sentences</h4><h2 class='metric-value'>{sentence_count:,}</h2></div>", unsafe_allow_html=True)
     
     else:
-        st.error("❌ Please provide text or upload a file to analyze.")
+        st.error("Please provide text or upload a file to analyze.")
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style='text-align: center'>
-    <p>🔍 AI Content Detector Pro | Built with ❤️ using Streamlit</p>
+    <p>AI Content Detector Pro | Built with Streamlit</p>
     <p>Advanced AI-generated content detection using multiple analysis techniques</p>
 </div>
 """, unsafe_allow_html=True)
