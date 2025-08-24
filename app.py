@@ -1,27 +1,22 @@
 import streamlit as st
 import numpy as np
-import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import re
 import nltk
 from collections import Counter
 import math
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
-from scipy.sparse import hstack
 import pickle
 import os
-import io
 import docx
 import PyPDF2
 from typing import Dict, List, Tuple, Any
 import warnings
 warnings.filterwarnings('ignore')
+import random
 
 # NLTK corpora/models required for improved perplexity
 try:
@@ -611,6 +606,78 @@ st.markdown("""
         color: #e2e8f0 !important;
         border: 1px solid rgba(59, 130, 246, 0.5) !important;
     }
+
+    /* --- Modern look & feel overrides (global) --- */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+    :root{
+        --accent: #FF6B6B;
+        --accent-2: #6366F1;
+        --bg: #ffffff;
+        --text: #0f172a; /* slate-900 */
+        --muted: #64748b; /* slate-500 */
+        --card-bg: #f8fafc; /* slate-50 */
+        --border: #e2e8f0; /* slate-200 */
+        --shadow: 0 6px 16px rgba(2,6,23,0.08);
+    }
+    .stApp, .main, .main .block-container{
+        font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, 'Apple Color Emoji','Segoe UI Emoji' !important;
+        color: var(--text) !important;
+    }
+    .main .block-container{
+        max-width: 1200px !important;
+        padding-top: 2rem !important;
+    }
+    .main .block-container h1{
+        font-weight: 800 !important;
+        letter-spacing: -0.02em !important;
+        border-bottom: none !important;
+        background: linear-gradient(90deg, var(--text), var(--accent-2));
+        -webkit-background-clip: text; background-clip: text; color: transparent !important;
+        margin-bottom: 0.75rem !important;
+    }
+    .main .block-container h2{
+        font-weight: 700 !important;
+        letter-spacing: -0.01em !important;
+        color: var(--text) !important;
+        margin-top: 1.5rem !important;
+    }
+    .stButton>button{
+        background: linear-gradient(135deg, var(--accent), #ff8e8e) !important;
+        color: #fff !important;
+        border-radius: 12px !important;
+        border: none !important;
+        padding: 0.7rem 1rem !important;
+        font-weight: 700 !important;
+        box-shadow: var(--shadow) !important;
+    }
+    .stButton>button:hover{
+        transform: translateY(-2px);
+        filter: brightness(1.02);
+    }
+    /* Cards */
+    .metric-card{
+        background: var(--card-bg) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 14px !important;
+        box-shadow: var(--shadow) !important;
+    }
+    /* Inputs - Main content */
+    .main .block-container .stTextArea textarea,
+    .main .block-container .stTextInput input,
+    .main .block-container .stNumberInput input{
+        background-color: #ffffff !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 10px !important;
+        box-shadow: 0 1px 2px rgba(2,6,23,0.04) inset !important;
+    }
+    .main .block-container .stFileUploader{ border-radius: 12px !important; }
+    .main .block-container .stFileUploader div[data-testid="stFileUploaderDropzone"]{
+        border: 2px dashed var(--border) !important;
+        background: #0f172a0a !important;
+        border-radius: 12px !important;
+    }
+    /* Plotly modebar subtle */
+    .modebar{ opacity: 0.7; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -649,21 +716,71 @@ class AIContentDetector:
                 self.train_model()
         else:
             st.sidebar.info("Training new model...")
-            self.train_model()
+            # Try to use real data if available
+            self.train_model(use_real_data=True)
     
-    def train_model(self):
+    def load_real_dataset(self, base_dir: str = "data") -> Tuple[List[str], List[int]]:
+        """Load real dataset from `data/human` and `data/ai` if available.
+        Returns texts and labels (0=human, 1=AI). Supports .txt, .docx, .pdf.
+        """
+        human_dir = os.path.join(base_dir, "human")
+        ai_dir = os.path.join(base_dir, "ai")
+        texts: List[str] = []
+        labels: List[int] = []
+
+        def read_file(path: str) -> str:
+            try:
+                lower = path.lower()
+                if lower.endswith(".txt"):
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        return f.read()
+                if lower.endswith(".docx"):
+                    d = docx.Document(path)
+                    return " ".join(p.text for p in d.paragraphs)
+                if lower.endswith(".pdf"):
+                    with open(path, "rb") as f:
+                        reader = PyPDF2.PdfReader(f)
+                        return "\n".join(page.extract_text() or "" for page in reader.pages)
+            except Exception:
+                return ""
+            return ""
+
+        for root_dir, label in [(human_dir, 0), (ai_dir, 1)]:
+            if not os.path.isdir(root_dir):
+                continue
+            for filename in os.listdir(root_dir):
+                if not filename.lower().endswith((".txt", ".docx", ".pdf")):
+                    continue
+                content = read_file(os.path.join(root_dir, filename)).strip()
+                if content:
+                    texts.append(content)
+                    labels.append(label)
+
+        return texts, labels
+
+    def train_model(self, use_real_data: bool = False):
         """Train the ML model with synthetic data.
         Note: For best real-world performance, replace this synthetic dataset
         with a labeled dataset of real human and AI texts.
         """
-        # Generate synthetic training data (larger, with more variety)
-        human_texts = self.generate_human_like_texts(300)
-        ai_texts = self.generate_ai_like_texts(300)
+        texts: List[str] = []
+        labels: List[int] = []
 
-        # Combine and label data
+        if use_real_data:
+            real_texts, real_labels = self.load_real_dataset()
+            if len(real_texts) >= 40 and len(set(real_labels)) == 2:
+                texts, labels = real_texts, real_labels
+                st.sidebar.info(f"Loaded real dataset: {len(texts)} samples")
+            else:
+                st.sidebar.warning("Real dataset not found or too small; using synthetic data instead")
+
+        if not texts:
+            # Generate synthetic training data (larger, with more variety)
+            human_texts = self.generate_human_like_texts(300)
+            ai_texts = self.generate_ai_like_texts(300)
         texts = human_texts + ai_texts
         labels = [0] * len(human_texts) + [1] * len(ai_texts)  # 0=human, 1=AI
-
+        
         # Train/validation split
         X_train_texts, X_val_texts, y_train, y_val = train_test_split(
             texts, labels, test_size=0.2, random_state=42, stratify=labels
@@ -672,7 +789,7 @@ class AIContentDetector:
         # Vectorize
         X_train = self.vectorizer.fit_transform(X_train_texts)
         X_val = self.vectorizer.transform(X_val_texts)
-
+        
         # Train classifier
         self.classifier.fit(X_train, y_train)
 
@@ -704,7 +821,7 @@ class AIContentDetector:
             'num_train_samples': len(X_train_texts),
             'num_val_samples': len(X_val_texts)
         }
-
+        
         # Save model
         model_data = {
             'vectorizer': self.vectorizer,
@@ -714,7 +831,7 @@ class AIContentDetector:
         }
         with open(self.model_path, 'wb') as f:
             pickle.dump(model_data, f)
-
+        
         st.sidebar.success(f"Model trained and saved | Val Acc: {acc:.2f}" + (f", AUC: {auc:.2f}" if auc is not None else ""))
     
     def generate_human_like_texts(self, num_samples: int) -> List[str]:
@@ -862,6 +979,34 @@ class TextAnalyzer:
             "unique_word_ratio": unique_word_ratio
         }
     
+    def _get_cached_lm(self):
+        """Load or build a compact Kneser–Ney trigram LM and cache on disk for speed."""
+        if hasattr(self, '_lm') and self._lm is not None:
+            return self._lm
+        lm_path = os.path.join(os.getcwd(), 'brown_kn3_lm.pkl')
+        try:
+            if os.path.exists(lm_path):
+                with open(lm_path, 'rb') as f:
+                    self._lm = pickle.load(f)
+                    return self._lm
+        except Exception:
+            pass
+
+        # Build smaller LM (sample subset to reduce build time) and persist
+        sentences = [[w.lower() for w in sent] for sent in brown.sents()]
+        if len(sentences) > 20000:
+            random.seed(42)
+            sentences = random.sample(sentences, 20000)
+        train_data, vocab = padded_everygram_pipeline(3, sentences)
+        self._lm = KneserNeyInterpolated(3)
+        self._lm.fit(train_data, vocab)
+        try:
+            with open(lm_path, 'wb') as f:
+                pickle.dump(self._lm, f)
+        except Exception:
+            pass
+        return self._lm
+
     def calculate_perplexity_score(self, text: str) -> Dict[str, float]:
         """Improved perplexity analysis.
 
@@ -875,17 +1020,17 @@ class TextAnalyzer:
           - Higher burstiness (variability across sentences) also suggests human text.
         """
         try:
+            # Fast tokenization (regex) and truncation to cap runtime
             sentences = nltk.sent_tokenize(text)
-            tokens = [w.lower() for w in nltk.word_tokenize(text) if any(c.isalpha() for c in w)]
+            tokens = re.findall(r"[a-zA-Z]+", text.lower())
             if len(tokens) < 20 or len(sentences) < 2:
                 return { 'score': 0.5, 'ppl': 0.0, 'burstiness': 0.0 }
+            MAX_TOKENS = 400
+            if len(tokens) > MAX_TOKENS:
+                tokens = tokens[:MAX_TOKENS]
 
-            # Train or reuse LM
-            if not hasattr(self, '_lm'):
-                train_sents = [[w.lower() for w in sent] for sent in brown.sents()]
-                train_data, vocab = padded_everygram_pipeline(3, train_sents)
-                self._lm = KneserNeyInterpolated(3)
-                self._lm.fit(train_data, vocab)
+            # Load or reuse compact LM
+            _lm = self._get_cached_lm()
 
             # Token-level perplexity
             padded = list(pad_both_ends(tokens, n=3))
@@ -895,7 +1040,7 @@ class TextAnalyzer:
             for gram in test_grams:
                 context = gram[:-1]
                 word = gram[-1]
-                prob = self._lm.score(word, context)
+                prob = _lm.score(word, context)
                 lp = math.log(max(prob, 1e-12))
                 log_prob += lp
                 log_probs.append(lp)
@@ -904,10 +1049,7 @@ class TextAnalyzer:
             # Sentence-level burstiness: variance of mean log-probs per sentence
             sent_scores = []
             idx = 0
-            tokenized_sents = [
-                [w.lower() for w in nltk.word_tokenize(s) if any(c.isalpha() for c in w)]
-                for s in sentences
-            ]
+            tokenized_sents = [[w for w in re.findall(r"[a-zA-Z]+", s.lower())] for s in sentences]
             for sent in tokenized_sents:
                 if len(sent) < 2:
                     continue
@@ -917,7 +1059,7 @@ class TextAnalyzer:
                     continue
                 s_log = 0.0
                 for g in grams:
-                    s_log += math.log(max(self._lm.score(g[-1], g[:-1]), 1e-12))
+                    s_log += math.log(max(_lm.score(g[-1], g[:-1]), 1e-12))
                 sent_scores.append(s_log / len(grams))
             burstiness = float(np.var(sent_scores)) if len(sent_scores) >= 2 else 0.0
 
@@ -959,13 +1101,14 @@ class TextAnalyzer:
             features = self.calculate_stylometric_features(text)
             results["stylometric"] = features
             
-            # Calculate stylometric score
+            # Calculate stylometric score and clamp to [0,1]
             stylometric_score = (
                 (1 - features.get("common_words_ratio", 0)) * 0.3 +
                 features.get("unique_word_ratio", 0) * 0.3 +
                 (1 - features.get("punctuation_ratio", 0)) * 0.2 +
                 features.get("sentence_length_variance", 0) / 100 * 0.2
             )
+            stylometric_score = float(np.clip(stylometric_score, 0.0, 1.0))
             results["stylometric_score"] = stylometric_score
         
         if method in ["Perplexity Analysis", "Combined Analysis"]:
@@ -993,7 +1136,7 @@ class TextAnalyzer:
                 results.get("perplexity", 0.5) * weights["perplexity"] +
                 (1 - results.get("ml_score", 0.5)) * weights["ml"]  # Invert ML score
             )
-            results["combined_score"] = combined_score
+            results["combined_score"] = float(np.clip(combined_score, 0.0, 1.0))
         
         return results
 
@@ -1028,9 +1171,9 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Model Status")
     if os.path.exists("ai_detector_model.pkl"):
-        st.markdown("<div class='stSuccess'>✅ <strong>ML Model Ready</strong></div>", unsafe_allow_html=True)
+        st.markdown("<div class='stSuccess'> <strong>ML Model Ready</strong></div>", unsafe_allow_html=True)
     else:
-        st.markdown("<div class='stInfo'>⏳ <strong>Training ML Model...</strong></div>", unsafe_allow_html=True)
+        st.markdown("<div class='stInfo'> <strong>Training ML Model...</strong></div>", unsafe_allow_html=True)
 
 # Main content
 st.title("AI Content Detector Pro")
@@ -1085,16 +1228,16 @@ if analyze_button:
             with col1:
                 # Determine score based on method
                 if detection_method == "Combined Analysis":
-                    score = results.get("combined_score", 0.5)
+                    score = float(np.clip(results.get("combined_score", 0.5), 0.0, 1.0))
                 elif detection_method == "ML Classification":
-                    score = 1 - results.get("ml_score", 0.5)
+                    score = 1 - float(np.clip(results.get("ml_score", 0.5), 0.0, 1.0))
                 elif detection_method == "Perplexity Analysis":
-                    score = results.get("perplexity", 0.5)
+                    score = float(np.clip(results.get("perplexity", 0.5), 0.0, 1.0))
                 else:
-                    score = results.get("stylometric_score", 0.5)
+                    score = float(np.clip(results.get("stylometric_score", 0.5), 0.0, 1.0))
                 
-                human_probability = score * 100
-                ai_probability = 100 - human_probability
+                human_probability = float(np.clip(score * 100, 0.0, 100.0))
+                ai_probability = float(np.clip(100.0 - human_probability, 0.0, 100.0))
                 
                 # Create enhanced pie chart
                 fig = go.Figure(data=[go.Pie(
@@ -1168,6 +1311,8 @@ if analyze_button:
                     feature_names = list(features.keys())
                     feature_values = list(features.values())
                     
+                    # Clamp values for display stability
+                    feature_values = [float(np.clip(v, -1e6, 1e6)) for v in feature_values]
                     fig = go.Figure(data=[
                         go.Bar(
                             x=feature_names,
@@ -1313,7 +1458,7 @@ if analyze_button:
             word_count = len(text_content.split())
             char_count = len(text_content)
             sentence_count = len(nltk.sent_tokenize(text_content))
-
+            
             c1, c2, c3 = st.columns(3)
             with c1:
                 st.markdown(f"<div class='metric-card'><h4>Words</h4><h2 class='metric-value'>{word_count:,}</h2></div>", unsafe_allow_html=True)
